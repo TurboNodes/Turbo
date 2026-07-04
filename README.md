@@ -2,9 +2,6 @@
 
 > **Fastest** and **cheapest** ~~decentralized~~ distributed HQ residential proxy network.
 
-> [!WARNING]
-> This project is in the **experimental** stage
-
 ## Features
 
 1. [x] Node connection quality analysis
