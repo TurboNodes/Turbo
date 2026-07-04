@@ -1,9 +1,11 @@
 package database
 
 import (
+	"net"
+	"time"
+
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // Postgres driver
-	"time"
 )
 
 type UserData struct {
@@ -21,8 +23,25 @@ func InitDatabase(connString string) (*sqlx.DB, error) {
 	return db, nil
 }
 
+func AddNode(db *sqlx.DB, uid string, nodeId string) error {
+	_, err := getOrCreateUser(db, uid)
+	if err != nil {
+		return err
+	}
+	nodeIP, _, err := net.SplitHostPort(nodeId)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.Exec("INSERT INTO \"UserNodes\" (\"authUserId\", \"id\", \"createdAt\") VALUES ($1, $2, $3)", uid, nodeIP, time.Now())
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 // GetOrCreateUser checks if a user exists by UID, creates if not
-func GetOrCreateUser(db *sqlx.DB, uid string) (*UserData, error) {
+func getOrCreateUser(db *sqlx.DB, uid string) (*UserData, error) {
 	var user UserData
 	err := db.Get(&user, "SELECT \"authUserId\", \"createdAt\", \"updatedAt\" FROM \"UserData\" WHERE \"authUserId\"=$1", uid)
 	if err == nil {

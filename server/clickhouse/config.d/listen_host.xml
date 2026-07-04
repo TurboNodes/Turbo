@@ -1,0 +1,6 @@
+<yandex>
+    <!-- Force ClickHouse to listen on IPv4 only -->
+    <listen_host>0.0.0.0</listen_host>
+    <!-- Remove the default IPv6 listener -->
+    <listen_host remove="true">::</listen_host>
+</yandex>

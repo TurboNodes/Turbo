@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"server/database"
+	"server/discord"
 	"server/proxy"
 	"server/website"
 	"time"
@@ -54,6 +55,10 @@ func generateTLSCert() tls.Certificate {
 func main() {
 	database.InitRedis()
 
+	if err := database.InitClickHouse(); err != nil {
+		log.Printf("Warning: ClickHouse initialization failed: %v", err)
+	}
+
 	http.Handle("/metrics", promhttp.Handler())
 	http.HandleFunc("/stats", website.StatsHandler)
 	go func() {
@@ -88,6 +93,8 @@ func main() {
 			go proxy.HandleSocksConn(conn)
 		}
 	}()
+
+	discord.StartBot("YOUR_DISCORD_BOT_TOKEN")
 
 	select {}
 }

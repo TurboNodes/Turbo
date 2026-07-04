@@ -1,5 +1,5 @@
 services:
-  app:
+  backend:
     build: .
     container_name: go-server
     ports:
@@ -8,11 +8,12 @@ services:
       - "8080:8080" # stats, metrics
       - "8443:8443/udp" # quic
     depends_on:
-      - redis
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     environment:
       - REDIS_ADDR=redis:6379
-    networks:
-      - backend
 
   redis:
     image: redis:7
@@ -20,8 +21,6 @@ services:
     volumes:
       - .logs/redis-data:/data
     command: ["redis-server", "--appendonly", "yes"]
-    networks:
-      - backend
 
   prometheus:
     image: prom/prometheus:latest
@@ -39,10 +38,8 @@ services:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
       - ./monitoring/alert_rules.yml:/etc/prometheus/alert_rules.yml
       - prometheus_data:/prometheus
-    networks:
-      - backend
     depends_on:
-      - app
+      - backend
     restart: unless-stopped
 
   grafana:
@@ -57,8 +54,6 @@ services:
     volumes:
       - grafana_data:/var/lib/grafana
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
-    networks:
-      - backend
     restart: unless-stopped
 
   redis-exporter:
@@ -68,16 +63,36 @@ services:
       - "9121:9121"
     environment:
       - REDIS_ADDR=redis://redis:6379
-    networks:
-      - backend
     depends_on:
       - redis
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/config.d/listen_host.xml:/etc/clickhouse-server/config.d/listen_host.xml:ro
+    environment:
+      CLICKHOUSE_DB: node_analytics
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    healthcheck:
+      test: [ "CMD", "wget", "--spider", "-q", "127.0.0.1:8123/ping" ]
+      interval: 2s
+      retries: 10
+
+  migrate:
+    image: migrate/migrate  # or your own small image
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/migrations
+    command:
+      - "-path=/migrations"
+      - "-database=clickhouse://clickhouse:9000/analytics"
+      - "up"
+    restart: "no"
 
 volumes:
   prometheus_data:
   grafana_data:
-
-networks:
-  backend:
-
-
+  clickhouse-data:

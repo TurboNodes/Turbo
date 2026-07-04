@@ -1,11 +1,10 @@
 package data
 
 import (
-	"encoding/csv"
+	"context"
+	"log"
 	"math"
-	"os"
 	"server/database"
-	"strconv"
 	"time"
 )
 
@@ -24,18 +23,14 @@ func LogConnection(features *ConnectionFeatures) {
 		return
 	}
 
-	f, err := os.OpenFile(".logs/dataset.csv", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-
-	writer := csv.NewWriter(f)
-	defer writer.Flush()
-
 	inboundPackets := len(features.Inbound)
 	outboundPackets := len(features.Outbound)
-	inoutRatio := float32(inboundPackets / outboundPackets)
+	var inoutRatio float64
+	if outboundPackets == 0 {
+		inoutRatio = float64(inboundPackets)
+	} else {
+		inoutRatio = float64(inboundPackets) / float64(outboundPackets)
+	}
 	totalPackets := inboundPackets + outboundPackets
 	inboundBytes := uint16(0)
 	inboundTimes := make([]int64, 0, inboundPackets)
@@ -108,7 +103,7 @@ func LogConnection(features *ConnectionFeatures) {
 	}
 
 	meanPktSize := float64(totalBytes) / float64(totalPackets)
-	var minPktSize uint16
+	var minPktSize = ^uint16(0) // initialize to max so comparisons work
 	var maxPktSize uint16
 	var stdPktSize float64
 	maxPktSize = 0
@@ -143,39 +138,52 @@ func LogConnection(features *ConnectionFeatures) {
 		}
 	}
 
-	data := map[string]string{
-		"protocol":           features.Protocol,
-		"start_time":         features.StartTime.Format(time.RFC3339),
-		"inbound_packets":    strconv.Itoa(inboundPackets),
-		"outbound_packets":   strconv.Itoa(outboundPackets),
-		"inout_ratio":        strconv.FormatFloat(float64(inoutRatio), 'f', -1, 64),
-		"total_packets":      strconv.Itoa(totalPackets),
-		"inbound_bytes":      strconv.FormatUint(uint64(inboundBytes), 10),
-		"outbound_bytes":     strconv.FormatUint(uint64(outboundBytes), 10),
-		"total_bytes":        strconv.FormatUint(uint64(totalBytes), 10),
-		"mean_inter_arrival": strconv.FormatFloat(meanInterArrival, 'f', -1, 64),
-		"min_inter_arrival":  strconv.FormatInt(minInterArrival, 10),
-		"max_inter_arrival":  strconv.FormatInt(maxInterArrival, 10),
-		"std_inter_arrival":  strconv.FormatFloat(stdInterArrival, 'f', -1, 64),
-		"mean_pkt_size":      strconv.FormatFloat(meanPktSize, 'f', -1, 64),
-		"min_pkt_size":       strconv.FormatUint(uint64(minPktSize), 10),
-		"max_pkt_size":       strconv.FormatUint(uint64(maxPktSize), 10),
-		"std_pkt_size":       strconv.FormatFloat(stdPktSize, 'f', -1, 64),
-		"duration":           strconv.FormatInt(duration, 10),
-		"throughput_mbps":    strconv.FormatFloat(throughputMbps, 'f', -1, 64),
+	// Insert directly into ClickHouse (typed values)
+	if database.ClickHouseClient == nil {
+		// ClickHouse not available; skip DB write but still log bytes transferred
+		LogBytesTransferred(features.Protocol, "in", "unknown", int(inboundBytes))
+		LogBytesTransferred(features.Protocol, "out", "unknown", int(outboundBytes))
+		return
 	}
-	database.PublishFeatures(data)
+
+	batch, err := chConn.PrepareBatch(context.Background(), "INSERT INTO session_features (session_id, protocol, start_time, inbound_packets, outbound_packets, inout_ratio, total_packets, inbound_bytes, outbound_bytes, total_bytes, mean_inter_arrival, min_inter_arrival, max_inter_arrival, std_inter_arrival, mean_pkt_size, min_pkt_size, max_pkt_size, std_pkt_size, duration, throughput_mbps)")
+	if err != nil {
+		log.Printf("clickhouse: prepare batch error: %v", err)
+		return
+	}
+
+	sessionID := uuid.New().String()
+	if err := batch.Append(
+		sessionID,
+		features.Protocol,
+		features.StartTime,
+		uint32(inboundPackets),
+		uint32(outboundPackets),
+		inoutRatio,
+		uint32(totalPackets),
+		uint64(inboundBytes),
+		uint64(outboundBytes),
+		uint64(totalBytes),
+		meanInterArrival,
+		minInterArrival,
+		maxInterArrival,
+		stdInterArrival,
+		meanPktSize,
+		uint64(minPktSize),
+		uint64(maxPktSize),
+		stdPktSize,
+		duration,
+		throughputMbps,
+	); err != nil {
+		log.Printf("clickhouse: append error: %v", err)
+		return
+	}
+
+	if err := batch.Send(); err != nil {
+		log.Printf("clickhouse: send batch error: %v", err)
+		return
+	}
 
 	LogBytesTransferred(features.Protocol, "in", "unknown", int(inboundBytes))
 	LogBytesTransferred(features.Protocol, "out", "unknown", int(outboundBytes))
-
-	var row []string
-	for _, value := range data {
-		row = append(row, value)
-	}
-
-	err = writer.Write(row)
-	if err != nil {
-		return
-	}
 }
