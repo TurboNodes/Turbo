@@ -2,7 +2,11 @@
 <module type="WEB_MODULE" version="4">
   <component name="Go" enabled="true" />
   <component name="NewModuleRootManager">
-    <content url="file://$MODULE_DIR$" />
+    <content url="file://$MODULE_DIR$">
+      <excludeFolder url="file://$MODULE_DIR$/examples/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/examples/Camoufox.app" />
+      <excludeFolder url="file://$MODULE_DIR$/examples/scraper-profile-20260104" />
+    </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
