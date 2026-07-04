@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"server/database"
 	"server/discord"
 	"server/proxy"
@@ -94,7 +95,7 @@ func main() {
 		}
 	}()
 
-	discord.StartBot("YOUR_DISCORD_BOT_TOKEN")
+	discord.StartBot(os.Getenv("DISCORD_TOKEN"))
 
 	select {}
 }
