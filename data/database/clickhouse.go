@@ -8,7 +8,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
-var ClickHouseClient clickhouse.Conn
+var ClickHouseConn clickhouse.Conn
 
 func InitClickHouse() error {
 	chAddr := os.Getenv("CLICKHOUSE_ADDR")
@@ -49,6 +49,6 @@ func InitClickHouse() error {
 		return fmt.Errorf("failed to ping ClickHouse: %w", err)
 	}
 
-	clickHouseClient = conn
+	ClickHouseConn = conn
 	return nil
 }

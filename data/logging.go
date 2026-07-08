@@ -4,8 +4,10 @@ import (
 	"context"
 	"log"
 	"math"
-	"server/database"
+	"server/data/database"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type ConnectionFeatures struct {
@@ -139,14 +141,14 @@ func LogConnection(features *ConnectionFeatures) {
 	}
 
 	// Insert directly into ClickHouse (typed values)
-	if database.ClickHouseClient == nil {
+	if database.ClickHouseConn == nil {
 		// ClickHouse not available; skip DB write but still log bytes transferred
 		LogBytesTransferred(features.Protocol, "in", "unknown", int(inboundBytes))
 		LogBytesTransferred(features.Protocol, "out", "unknown", int(outboundBytes))
 		return
 	}
 
-	batch, err := chConn.PrepareBatch(context.Background(), "INSERT INTO session_features (session_id, protocol, start_time, inbound_packets, outbound_packets, inout_ratio, total_packets, inbound_bytes, outbound_bytes, total_bytes, mean_inter_arrival, min_inter_arrival, max_inter_arrival, std_inter_arrival, mean_pkt_size, min_pkt_size, max_pkt_size, std_pkt_size, duration, throughput_mbps)")
+	batch, err := database.ClickHouseConn.PrepareBatch(context.Background(), "INSERT INTO session_features (session_id, protocol, start_time, inbound_packets, outbound_packets, inout_ratio, total_packets, inbound_bytes, outbound_bytes, total_bytes, mean_inter_arrival, min_inter_arrival, max_inter_arrival, std_inter_arrival, mean_pkt_size, min_pkt_size, max_pkt_size, std_pkt_size, duration, throughput_mbps)")
 	if err != nil {
 		log.Printf("clickhouse: prepare batch error: %v", err)
 		return

@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"server/database"
+	"server/data/database"
 	"server/proxy/user"
 	"strings"
 )

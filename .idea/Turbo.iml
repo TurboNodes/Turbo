@@ -6,6 +6,7 @@
       <excludeFolder url="file://$MODULE_DIR$/examples/.venv" />
       <excludeFolder url="file://$MODULE_DIR$/examples/Camoufox.app" />
       <excludeFolder url="file://$MODULE_DIR$/examples/scraper-profile-20260104" />
+      <excludeFolder url="file://$MODULE_DIR$/examples/stealth scraping/Camoufox.app" />
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />

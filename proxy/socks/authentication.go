@@ -5,7 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
-	"server/database"
+	"server/data/database"
 	"server/proxy/user"
 )
 

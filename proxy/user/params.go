@@ -38,6 +38,7 @@ func ParseParams(paramStr string) map[string]string {
 	return params
 }
 
+// TODO: check if clients are in the region
 var validCountryCodes = map[string]struct{}{
 	"AD": {}, "AE": {}, "AF": {}, "AG": {}, "AI": {}, "AL": {}, "AM": {}, "AO": {},
 	"AQ": {}, "AR": {}, "AS": {}, "AT": {}, "AU": {}, "AW": {}, "AX": {}, "AZ": {},

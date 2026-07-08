@@ -11,7 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"server/database"
+	"server/data/database"
 	"server/proxy/user"
 	"sync"
 	"sync/atomic"
