@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"server/data/database"
+	"server/data/database/supabase"
 	"server/discord"
 	"server/proxy"
 	"server/website"
@@ -55,7 +56,9 @@ func generateTLSCert() tls.Certificate {
 
 func main() {
 	database.InitRedis()
-
+	if err := supabase.InitDatabase(os.Getenv("DATABASE_URL")); err != nil {
+		log.Fatalf("Supabase initialization failed: %v", err)
+	}
 	if err := database.InitClickHouse(); err != nil {
 		log.Printf("Warning: ClickHouse initialization failed: %v", err)
 	}
@@ -69,9 +72,8 @@ func main() {
 	}()
 
 	tlsConfig := &tls.Config{
-		InsecureSkipVerify: true, // Skip verification for self-signed cert
-		Certificates:       []tls.Certificate{generateTLSCert()},
-		NextProtos:         []string{"turbo-proxy"}, // Application protocol
+		Certificates: []tls.Certificate{generateTLSCert()},
+		NextProtos:   []string{"turbo-proxy"}, // Application protocol
 	}
 	log.Println("Starting QUIC server on :8443")
 	err := proxy.StartQuicServer(":8443", tlsConfig)
@@ -95,7 +97,10 @@ func main() {
 		}
 	}()
 
-	discord.StartBot(os.Getenv("DISCORD_TOKEN"))
+	if os.Getenv("DISCORD_TOKEN") != "" {
+		discord.StartBot(os.Getenv("DISCORD_TOKEN"))
+		log.Println("Started Discord bot")
+	}
 
 	select {}
 }

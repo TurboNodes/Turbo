@@ -10,8 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"server/data/database"
+	"server/data/database/supabase"
 	"server/proxy/user"
 	"sync"
 	"sync/atomic"
@@ -37,17 +36,22 @@ var (
 
 // QuicClient represents a connected QUIC client
 type QuicClient struct {
-	ID         string
-	conn       *quic.Conn
-	stream     *quic.Stream
-	mutex      sync.Mutex
-	userConns  map[string]*Connection
-	userMutex  sync.Mutex
-	lastPing   time.Time
-	lastPingID string
-	Metrics    *Metrics
-	Stats      *ClientStats
-	kicked     atomic.Bool
+	ID              string
+	NodeIP          string
+	conn            *quic.Conn
+	stream          *quic.Stream
+	mutex           sync.Mutex
+	userConns       map[string]*Connection
+	userMutex       sync.Mutex
+	lastPing        time.Time
+	lastPingID      string
+	Metrics         *Metrics
+	Stats           *ClientStats
+	kicked          atomic.Bool
+	pairingMu       sync.Mutex
+	pending         *pendingPairing
+	pairingStop     chan struct{}
+	pairingStopOnce sync.Once
 }
 
 // StartQuicServer initializes the QUIC server
@@ -83,6 +87,13 @@ func handleQuicConnection(conn *quic.Conn) {
 	clientID := conn.RemoteAddr().String()
 	log.Printf("New QUIC client connected: %s", clientID)
 
+	nodeIP, _, err := net.SplitHostPort(clientID)
+	if err != nil {
+		log.Printf("Failed to parse node IP from %s: %v", clientID, err)
+		conn.CloseWithError(1, "invalid remote address")
+		return
+	}
+
 	// Accept a bidirectional stream
 	stream, err := conn.AcceptStream(context.Background())
 	if err != nil {
@@ -92,11 +103,13 @@ func handleQuicConnection(conn *quic.Conn) {
 	}
 
 	client := &QuicClient{
-		ID:        clientID,
-		conn:      conn,
-		stream:    stream,
-		userConns: make(map[string]*Connection),
-		lastPing:  time.Now(),
+		ID:          clientID,
+		NodeIP:      nodeIP,
+		conn:        conn,
+		stream:      stream,
+		userConns:   make(map[string]*Connection),
+		lastPing:    time.Now(),
+		pairingStop: make(chan struct{}),
 		Metrics: &Metrics{
 			Reliability: 0.7,
 			Score:       50,
@@ -112,18 +125,18 @@ func handleQuicConnection(conn *quic.Conn) {
 	QuicMutex.Unlock()
 
 	go quicReader(client)
+	go client.runPairing()
+	go markNodeActive(nodeIP, true)
 
 	country := "global"
-	if ip, _, err := net.SplitHostPort(conn.RemoteAddr().String()); err == nil {
-		resp, err := http.Get("http://ip-api.com/csv/" + ip + "?fields=countryCode")
-		if err == nil {
-			defer resp.Body.Close()
-			if resp.StatusCode == 200 {
-				body, err := io.ReadAll(resp.Body)
-				if err == nil {
-					if user.IsValidCountryCode(country) {
-						country = string(body)
-					}
+	resp, err := http.Get("http://ip-api.com/csv/" + nodeIP + "?fields=countryCode")
+	if err == nil {
+		defer resp.Body.Close()
+		if resp.StatusCode == 200 {
+			body, err := io.ReadAll(resp.Body)
+			if err == nil {
+				if user.IsValidCountryCode(country) {
+					country = string(body)
 				}
 			}
 		}
@@ -139,6 +152,9 @@ func quicReader(client *QuicClient) {
 		delete(QuicClients, client.ID)
 		log.Printf("QUIC client disconnected: %s. Remaining clients: %d", client.ID, len(QuicClients))
 		QuicMutex.Unlock()
+
+		client.stopPairing()
+		go markNodeActive(client.NodeIP, false)
 
 		client.stream.Close()
 		client.conn.CloseWithError(0, "client disconnected")
@@ -177,28 +193,18 @@ func quicReader(client *QuicClient) {
 			client.Stats.CryptoAddr = msg.ID
 		case "pong":
 			client.Pong()
-		case "uid-register":
-			db, err := database.InitDatabase(os.Getenv("DATABASE_URL"))
-			if err != nil {
-				log.Println(err)
-			}
-
-			err = database.AddNode(db, msg.ID, client.ID)
-			if err != nil {
-				log.Printf("Error adding node to %s, %v", client.ID, err)
-			} else {
-				log.Printf("Registered Node %s for client %s", msg.ID, client.ID)
-			}
-
-			db.Close()
-
-			/*
-				TODO(architecture):
-					- Put Quic client stats into database
-					- Link Distant node with Quic client so that,
-					- Server can update Node stats.
-			*/
 		}
+	}
+}
+
+func markNodeActive(nodeIP string, active bool) {
+	if nodeIP == "" {
+		return
+	}
+	db := supabase.SupabaseDB
+	if err := supabase.SetNodeActive(db, nodeIP, active); err != nil {
+		// Unpaired nodes have no row yet — ignore.
+		log.Printf("node activity update for %s: %v", nodeIP, err)
 	}
 }
 
@@ -225,6 +231,7 @@ func (c *QuicClient) Kick(reason string) {
 		return // Already kicked
 	}
 
+	c.stopPairing()
 	c.conn.CloseWithError(0, reason)
 
 	c.mutex.Lock()
