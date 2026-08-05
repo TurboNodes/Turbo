@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"server/data/database/supabase"
@@ -8,8 +9,9 @@ import (
 )
 
 const (
-	pairingRetryDelay = 30 * time.Second
-	pairingTTL        = 2 * time.Hour
+	pairingRetryDelay   = 30 * time.Second
+	pairingPollInterval = 5 * time.Second
+	pairingTTL          = 2 * time.Hour
 )
 
 type pendingPairing struct {
@@ -22,7 +24,7 @@ type pendingPairing struct {
 const WEBSITE_URL = "https://turbo-node.vercel.app"
 
 // runPairing owns the full pairing lifecycle for this session:
-// create UUID → send pairing_url → on expiry refresh → stop when paired or disconnected.
+// create UUID → send pairing_url → poll until paired or expiry → refresh URL on expiry.
 func (c *QuicClient) runPairing() {
 	for {
 		if c.kicked.Load() {
@@ -31,13 +33,18 @@ func (c *QuicClient) runPairing() {
 
 		userID, err := supabase.GetNodeUserID(supabase.SupabaseDB, c.NodeIP)
 		if err != nil {
-			log.Printf("pairing owner lookup %s: %v", c.NodeIP, err)
-			if !c.pairingSleep(pairingRetryDelay) {
-				return
+			// Ownership lookup must not block issuing a pairing URL — the client
+			// expects pairing_url on launch. Retry the lookup after sending.
+			log.Printf("pairing owner lookup %s: %v (issuing pairing_url anyway)", c.NodeIP, err)
+		} else if userID != "" {
+			if err := c.sendPaired(userID); err != nil {
+				log.Printf("paired send %s: %v", c.NodeIP, err)
+				if !c.pairingSleep(pairingRetryDelay) {
+					return
+				}
+				continue
 			}
-			continue
-		}
-		if userID != "" {
+			log.Printf("paired sent node=%s", c.NodeIP)
 			c.clearPending()
 			return
 		}
@@ -70,12 +77,33 @@ func (c *QuicClient) runPairing() {
 		}
 		log.Printf("pairing_url sent node=%s uuid=%s expires=%s", c.NodeIP, id, expiresAt.Format(time.RFC3339))
 
-		wait := time.Until(expiresAt)
-		if wait <= 0 {
-			wait = pairingTTL
+		if expiresAt.IsZero() {
+			expiresAt = time.Now().Add(pairingTTL)
 		}
-		if !c.pairingSleep(wait) {
-			return
+
+		// Poll for claim until the UUID expires, then mint a fresh one.
+		for time.Now().Before(expiresAt) {
+			if !c.pairingSleep(pairingPollInterval) {
+				return
+			}
+			if c.kicked.Load() {
+				return
+			}
+
+			userID, err := supabase.GetNodeUserID(supabase.SupabaseDB, c.NodeIP)
+			if err != nil {
+				log.Printf("pairing owner poll %s: %v", c.NodeIP, err)
+				continue
+			}
+			if userID != "" {
+				if err := c.sendPaired(userID); err != nil {
+					log.Printf("paired send %s: %v", c.NodeIP, err)
+					continue
+				}
+				log.Printf("paired sent node=%s", c.NodeIP)
+				c.clearPending()
+				return
+			}
 		}
 	}
 }
@@ -104,4 +132,16 @@ func (c *QuicClient) clearPending() {
 	c.pairingMu.Lock()
 	c.pending = nil
 	c.pairingMu.Unlock()
+}
+
+func (c *QuicClient) sendPaired(userID string) error {
+	tokens, err := supabase.IssueUserSessionTokens(userID)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(tokens)
+	if err != nil {
+		return err
+	}
+	return c.SendMessage(Message{Type: "paired", Data: string(data)})
 }

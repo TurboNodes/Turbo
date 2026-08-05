@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"errors"
 	"log"
 	"math/big"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"server/website"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -54,7 +56,19 @@ func generateTLSCert() tls.Certificate {
 	return cert
 }
 
+// loadEnv reads a .env file when present. Existing shell env vars take precedence.
+func loadEnv() {
+	if err := godotenv.Load(); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		log.Fatalf("Failed to load .env: %v", err)
+	}
+}
+
 func main() {
+	loadEnv()
+
 	database.InitRedis()
 	if err := supabase.InitDatabase(os.Getenv("DATABASE_URL")); err != nil {
 		log.Fatalf("Supabase initialization failed: %v", err)

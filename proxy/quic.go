@@ -21,7 +21,7 @@ import (
 
 type Message struct {
 	Type string `json:"type"`
-	ID   string `json:"ID"`
+	ID   string `json:"id"`
 	// Addr also contains port of the target website
 	Addr string `json:"addr,omitempty"`
 	Data string `json:"data,omitempty"`

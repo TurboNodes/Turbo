@@ -1,6 +1,7 @@
 package supabase
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"net"
@@ -10,6 +11,8 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // Postgres driver
 )
+
+const dbOpTimeout = 8 * time.Second
 
 var SupabaseDB *sqlx.DB
 
@@ -65,8 +68,12 @@ func getOrCreateUser(db *sqlx.DB, uid string) (*UserData, error) {
 // CreateNodeConnectRequest inserts a pairing UUID for a node IP (TTL = 2 hours).
 func CreateNodeConnectRequest(db *sqlx.DB, nodeIP string) (string, time.Time, error) {
 	id := uuid.New().String()
+	ctx, cancel := context.WithTimeout(context.Background(), dbOpTimeout)
+	defer cancel()
+
 	var expiresAt time.Time
-	err := db.QueryRow(
+	err := db.QueryRowContext(
+		ctx,
 		`INSERT INTO node_connect_requests (uuid, node_ip, expires_at)
 		 VALUES ($1, $2, now() + interval '2 hours')
 		 RETURNING expires_at`,
@@ -80,8 +87,11 @@ func CreateNodeConnectRequest(db *sqlx.DB, nodeIP string) (string, time.Time, er
 
 // GetNodeUserID returns the owner of nodeIp, or "" if unpaired.
 func GetNodeUserID(db *sqlx.DB, nodeIP string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbOpTimeout)
+	defer cancel()
+
 	var userID sql.NullString
-	err := db.QueryRow(`SELECT "userId" FROM nodes WHERE "nodeIp" = $1`, nodeIP).Scan(&userID)
+	err := db.QueryRowContext(ctx, `SELECT "userId" FROM nodes WHERE "nodeIp" = $1`, nodeIP).Scan(&userID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -96,7 +106,11 @@ func GetNodeUserID(db *sqlx.DB, nodeIP string) (string, error) {
 
 // SetNodeActive updates ops fields on nodes by nodeIp. Never touches userId.
 func SetNodeActive(db *sqlx.DB, nodeIP string, active bool) error {
-	_, err := db.Exec(
+	ctx, cancel := context.WithTimeout(context.Background(), dbOpTimeout)
+	defer cancel()
+
+	_, err := db.ExecContext(
+		ctx,
 		`UPDATE nodes SET "isActive" = $1, "updatedAt" = $2 WHERE "nodeIp" = $3`,
 		active, time.Now(), nodeIP,
 	)
