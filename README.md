@@ -2,14 +2,16 @@
 
 > **Fastest** and **cheapest** ~~decentralized~~ distributed HQ residential proxy network.
 
+
+What to run a node? Go to [our website](https://turbo-node.vercel.app) or [Turbo Client Node](https://github.com/TurboNodes/client-node)
+
 ## Features
 
-1. [x] Node connection quality analysis
-2. [x] Redis Auth & PUB/SUB (Credits, AI stream)
-3. [ ] ~~Chrome Extension for client~~
-4. [ ] AI abnormal traffic detection model
+1. [x] Self-sourced IPs and node connection quality analysis for highest success rate
+3. [x] Redis Auth & PUB/SUB (Credits, Stream for abnormal traffic detection model)
+4. [ ] Skip-hop option: connect directly to the end node for extremely low latency
 
-[//]: # (7. [ ] LLM Data Extraction with Cuelang)
+
 ## Global architecture
 
 ```mermaid
@@ -54,42 +56,6 @@ flowchart TD
     
 ```
 
-## Run a Node
-
-The Turbo client node is a lightweight process that runs in the background and that lets you earn passive crypto rewards for sharing your unused Internet bandwidth.
-
-#### Compatibility
-
-| Platform | Supported |
-|----------|-----------|
-| Windows  | ✅         |
-| macOS    | ✅         |
-| Linux    | ✅         |
-| Mobile   | ❌         |
-
-#### Installation
-
-- Download the [latest release](https://github.com/L1shed/Turbo/releases) for your platform.
-- Open the downloaded executable — a new icon will appear in your system tray.
-- Click on the icon and select **"Connect"** to pair with your account.
-
-![img.png](.github/assets/img.png)
-- A page will open, if authentication is successful, you will be redirected to the dashboard and your new node will appear in the nodes list.
-
-  You can add an unlimited amount of nodes as long as they are on different networks/IPs.
-
-🎉 Congratulations! Your node is now earning passively, check out your dashboard regularly
-
-#### Monetization
-
-Base reward is `$0.10` per GB shared but bonuses apply such as if:
-* Your node has reached a daily connections streak over several days.
-* Your node has a stable _long-term_ connection.
-
-`$0.10` may seem low but the network is small, therefore the handled bandwidth per node is high.
-
-For example, an average low-end node shares 0.05 GB/hour of bandwidth.
-At the current price rate we get $3.72/month + bonuses **per node** if running 24/7, users can run multiple nodes on distinct devices.
 
 #### Score calculation
 
@@ -134,11 +100,8 @@ sequenceDiagram
     Proxy_Server-->>SOCKS5_Client: 6. Send back to SOCKS5 Client
 ```
 
-## Buy Bandwidth
+## Network Access
 
-Want to buy proxy access from our network for web-scraping?
+Want to buy proxy access from our network for web-scraping, browser agents?
 
-* [**Telegram channel**](https://t.me/node_turbo)
-* **Discord**: Find my Discord ID on my GitHub user profile page and DM me.
-
-[//]: # (Join our [**Discord server**]&#40;https://discord.gg/ZqdvQkSEc7&#41; and create a ticket.)
+Join our [**Discord server**](https://discord.gg/ZqdvQkSEc7): Create a ticket or DM _@lished_ for more information.
