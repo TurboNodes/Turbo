@@ -8,8 +8,9 @@ What to run a node? Go to [our website](https://turbo-node.vercel.app) or [Turbo
 ## Features
 
 1. [x] Self-sourced IPs and node connection quality analysis for highest success rate
-2. [x] Redis Auth & PUB/SUB (Credits, Stream for abnormal traffic detection model)
-3. [ ] Skip-hop option: connect directly to the end node for extremely low latency
+2. [x] All the standart proxy features:
+3. [x] Redis Auth & PUB/SUB (Credits, Stream for abnormal traffic detection model)
+4. [ ] Skip-hop option (requires port forwarding and SDK use): dynamically connect to the end nodes for extremely low latency and TTFB (up to <20ms)
 
 
 ## Global architecture
@@ -59,15 +60,21 @@ flowchart TD
 
 #### Score calculation
 
-Your node score is based on two factors:
+Your node score $S$ is based on three factors:
 - $L$: Latency, capped on a range from 10ms to 500ms
 - $R$: Reliability
+- $U$: Uptime, measured over a 30-days rolling period
 
 $$
-S = w_L \cdot L + w_R \cdot R
+S = w_L \cdot L + w_R \cdot R + w_U \cdot U
 $$
 
-Where $w_L =$ 40% , $w_R =$ 60%
+Where, by default, $w_L =$ 35% , $w_R =$ 40%, and $w_U =$ 25%.
+
+The magic is that you can tailor the weights to your needs, for example if you want to prioritize reliability over latency, you can request like so:
+```
+curl -x "socks5h://reliability=70%,uptime=12%,country=US:API-KEY@turbonodes.net" https://httpbin.org/ip
+```
 
 ### Self-host a Server Node
 
@@ -76,7 +83,6 @@ You're free to operate your own server for commercial use according to the [Apac
 Run server docker image with `docker-compose up` and connect client nodes.
 
 For more information, see [Setting Up Development Environment](.github/CONTRIBUTING.md#setting-up-development-environment)
-
 
 ## System Design
 
@@ -100,8 +106,21 @@ sequenceDiagram
     Proxy_Server-->>SOCKS5_Client: 6. Send back to SOCKS5 Client
 ```
 
+### Security
+
+Networks of this type always raise security and ethical concerns.
+Most providers (including major actors such as  Bright Data, Oxylabs, ...) spy the content of your communication with the website, and can even inject malicious content into the traffic.
+
+**We are the only providers that systematically block any pure HTTP request and strictly enforce user-terminated TLS encryption**
+
+That way, only the proxy user and the target website can decrypt the traffic.
+Our aforementioned zero-trust policy ensures that client nodes cryptographically cannot see the packets' payload.
+
+This architecture mitigates MITM threats and reliably certifies that the data returned to the proxy user is the data sent by the target website.
+
 ## Network Access
 
 Want to buy proxy access from our network for web-scraping, browser agents?
 
-Join our [**Discord server**](https://discord.gg/ZqdvQkSEc7): Create a ticket or DM _@lished_ for more information.
+Join our [**Discord server**](https://discord.gg/ZqdvQkSEc7) for more information: Create a ticket or DM _@lished_.
+You can also reach us via [email](mailto:lished.pro@outlook.com)
