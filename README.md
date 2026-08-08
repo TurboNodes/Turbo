@@ -8,8 +8,8 @@ What to run a node? Go to [our website](https://turbo-node.vercel.app) or [Turbo
 ## Features
 
 1. [x] Self-sourced IPs and node connection quality analysis for highest success rate
-3. [x] Redis Auth & PUB/SUB (Credits, Stream for abnormal traffic detection model)
-4. [ ] Skip-hop option: connect directly to the end node for extremely low latency
+2. [x] Redis Auth & PUB/SUB (Credits, Stream for abnormal traffic detection model)
+3. [ ] Skip-hop option: connect directly to the end node for extremely low latency
 
 
 ## Global architecture
