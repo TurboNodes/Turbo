@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/redis/go-redis/v9"
@@ -40,6 +41,11 @@ func RegisterUser(password string, credits int) error {
 }
 
 func GetCredits(password string) (int, error) {
+	if os.Getenv("NO_REDIS") == "1" {
+		log.Println("NO_REDIS is enabled, skipping Redis account credits check")
+		return 999, nil
+	}
+
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
 		return 0, fmt.Errorf("error hashing password: %v", err)

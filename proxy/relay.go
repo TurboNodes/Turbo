@@ -2,11 +2,11 @@ package proxy
 
 import (
 	"encoding/base64"
-	"fmt"
 	"log"
 	"net"
 	data2 "server/data"
 	"server/proxy/socks"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -59,7 +59,7 @@ func HandleSocksConn(conn net.Conn) {
 		connData = base64.StdEncoding.EncodeToString(buffer[:n])
 		pc.Features.Inbound[time.Since(pc.Features.StartTime).Microseconds()] += uint16(n)
 	}
-	msg := Message{Type: "connect", ID: pc.ID, Addr: fmt.Sprintf("%s:%d", host, port), Data: connData}
+	msg := Message{Type: "connect", ID: pc.ID, Addr: net.JoinHostPort(host, strconv.Itoa(port)), Data: connData}
 
 	success := false
 	attempts := 0
@@ -72,64 +72,76 @@ func HandleSocksConn(conn net.Conn) {
 			return
 		}
 
+		pc.resetHandshake()
 		client.userMutex.Lock()
 		client.userConns[pc.ID] = pc
 		client.userMutex.Unlock()
 		atomic.AddInt32(&client.Stats.ActiveConns, 1)
 
-		err = client.SendMessage(msg)
-		if err != nil {
+		if err := client.SendMessage(msg); err != nil {
 			log.Println("WriteJSON error:", err)
-			client.userMutex.Lock()
-			delete(client.userConns, pc.ID)
-			client.userMutex.Unlock()
-			atomic.AddInt32(&client.Stats.ActiveConns, -1)
+			detach(client, pc)
 			continue
 		}
 
+		// Wait for the node's explicit verdict. Any payload it sends meanwhile
+		// simply queues in DataChan and is flushed once the relay starts.
 		select {
-		case <-pc.DataChan:
+		case <-pc.ready:
 			success = true
+		case <-pc.failed:
+			log.Printf("Node %s could not reach %s, trying another node", client.ID, msg.Addr)
+			detach(client, pc)
+			continue
 		case <-time.After(connectTimeout):
-			log.Printf("Connection timeout for client %s, retrying with another client", client.ID)
-			client.userMutex.Lock()
-			delete(client.userConns, pc.ID)
-			client.userMutex.Unlock()
-			atomic.AddInt32(&client.Stats.ActiveConns, -1)
+			log.Printf("Node %s timed out on %s, trying another node", client.ID, msg.Addr)
+			detach(client, pc)
 			continue
 		}
 
-		if success {
-			atomic.AddUint64(&client.Stats.BytesSent, uint64(n))
-			go relayFromSocksToQuic(client, pc)
-			relayFromChanToSocks(client, pc)
-			return
-		}
+		atomic.AddUint64(&client.Stats.BytesSent, uint64(n))
+		go relayFromSocksToQuic(client, pc)
+		relayFromChanToSocks(client, pc)
+		return
 	}
 
-	conn.Write([]byte{5, 1, 0, 1, 0, 0, 0, 0, 0, 0})
+	// The SOCKS success reply already went out above (it has to, so the user
+	// sends the payload we bundle into the connect message). Once that is on
+	// the wire the stream is raw tunnel data, so a failure reply here would be
+	// read as garbage by the user -- all we can do now is drop the connection.
+	log.Printf("No node could reach %s after %d attempts", msg.Addr, attempts)
 }
 
 func relayFromSocksToQuic(client *QuicClient, pc *Connection) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := pc.Conn.Read(buf)
-		if err != nil {
+		// Read may return data *and* an error (typically io.EOF) in the same
+		// call, so flush what we got before acting on the error.
+		if n > 0 {
+			atomic.AddUint64(&client.Stats.BytesSent, uint64(n))
 			pc.Features.Outbound[time.Since(pc.Features.StartTime).Microseconds()] += uint16(n)
+
+			data := base64.StdEncoding.EncodeToString(buf[:n])
+			msg := Message{Type: "data", ID: pc.ID, Data: data}
+			if client.conn != nil {
+				client.SendMessage(msg)
+			}
+		}
+		if err != nil {
 			client.SendCloseMessage(pc.ID)
 			return
 		}
-
-		dataSize := uint64(n)
-		atomic.AddUint64(&client.Stats.BytesSent, dataSize)
-		pc.Features.Outbound[time.Since(pc.Features.StartTime).Microseconds()] += uint16(n)
-
-		data := base64.StdEncoding.EncodeToString(buf[:n])
-		msg := Message{Type: "data", ID: pc.ID, Data: data}
-		if client.conn != nil {
-			client.SendMessage(msg)
-		}
 	}
+}
+
+// detach unregisters pc from a node that failed the handshake, leaving the
+// user's connection intact so the next node can be tried.
+func detach(client *QuicClient, pc *Connection) {
+	client.userMutex.Lock()
+	delete(client.userConns, pc.ID)
+	client.userMutex.Unlock()
+	atomic.AddInt32(&client.Stats.ActiveConns, -1)
 }
 
 func relayFromChanToSocks(client *QuicClient, pc *Connection) {
@@ -138,7 +150,6 @@ func relayFromChanToSocks(client *QuicClient, pc *Connection) {
 		atomic.AddUint64(&client.Stats.BytesReceived, uint64(n))
 		pc.Features.Inbound[time.Since(pc.Features.StartTime).Microseconds()] += uint16(n)
 		if err != nil {
-			//client.SendCloseMessage(pc.ID)
 			return
 		}
 	}

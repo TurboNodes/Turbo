@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"server/data/database/supabase"
 	"server/proxy/user"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,6 +34,10 @@ var (
 	QuicMutex             sync.RWMutex
 	quicListener          *quic.Listener
 	BrowserScreenshotData = make(chan []byte)
+
+	// geoRateLimitedUntil holds the unix time (seconds) before which
+	// ip-api.com must not be called again, per its rate limit headers.
+	geoRateLimitedUntil atomic.Int64
 )
 
 // QuicClient represents a connected QUIC client
@@ -129,14 +135,25 @@ func handleQuicConnection(conn *quic.Conn) {
 	go markNodeActive(nodeIP, true)
 
 	country := "global"
-	resp, err := http.Get("http://ip-api.com/csv/" + nodeIP + "?fields=countryCode")
+	if wait := time.Until(time.Unix(geoRateLimitedUntil.Load(), 0)); wait > 0 {
+		time.Sleep(wait)
+	}
+
+	geoClient := http.Client{Timeout: 5 * time.Second}
+	resp, err := geoClient.Get("http://ip-api.com/csv/" + nodeIP + "?fields=countryCode")
 	if err == nil {
 		defer resp.Body.Close()
+		if resp.Header.Get("X-Rl") == "0" {
+			if ttl, ttlErr := strconv.Atoi(strings.TrimSpace(resp.Header.Get("X-Ttl"))); ttlErr == nil {
+				geoRateLimitedUntil.Store(time.Now().Add(time.Duration(ttl) * time.Second).Unix())
+			}
+		}
 		if resp.StatusCode == 200 {
 			body, err := io.ReadAll(resp.Body)
 			if err == nil {
-				if user.IsValidCountryCode(country) {
-					country = string(body)
+				detected := strings.TrimSpace(string(body))
+				if user.IsValidCountryCode(detected) {
+					country = detected
 				}
 			}
 		}
@@ -182,13 +199,28 @@ func quicReader(client *QuicClient) {
 				}
 			}
 			client.userMutex.Unlock()
+		case "connected":
+			client.userMutex.Lock()
+			sc, ok := client.userConns[msg.ID]
+			client.userMutex.Unlock()
+			if ok {
+				sc.MarkReady()
+			}
 		case "close":
 			client.userMutex.Lock()
-			if sc, ok := client.userConns[msg.ID]; ok {
-				sc.Conn.Close()
-				delete(client.userConns, msg.ID)
-			}
+			sc, ok := client.userConns[msg.ID]
 			client.userMutex.Unlock()
+			if !ok {
+				break
+			}
+			if sc.Established() {
+				// Target hung up on a live connection: tear the user side down.
+				client.SendCloseMessage(msg.ID)
+			} else {
+				// The node never reached the target. Leave the user's socket
+				// alone so HandleSocksConn can retry with a different node.
+				sc.MarkFailed()
+			}
 		case "address":
 			client.Stats.CryptoAddr = msg.ID
 		case "pong":
