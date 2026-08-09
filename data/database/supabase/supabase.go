@@ -81,3 +81,16 @@ func SetNodeActive(db *sqlx.DB, nodeIP string, active bool) error {
 	)
 	return err
 }
+
+// UnpairNode clears the owner of nodeIp, returning it to an unpaired state.
+func UnpairNode(db *sqlx.DB, nodeIP string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), dbOpTimeout)
+	defer cancel()
+
+	_, err := db.ExecContext(
+		ctx,
+		`UPDATE nodes SET "userId" = NULL, "updatedAt" = $1 WHERE "nodeIp" = $2`,
+		time.Now(), nodeIP,
+	)
+	return err
+}

@@ -193,6 +193,13 @@ func quicReader(client *QuicClient) {
 			client.Stats.CryptoAddr = msg.ID
 		case "pong":
 			client.Pong()
+		case "unpair":
+			if err := supabase.UnpairNode(supabase.SupabaseDB, client.NodeIP); err != nil {
+				log.Printf("unpair %s: %v", client.NodeIP, err)
+			} else {
+				log.Printf("node unpaired: %s", client.NodeIP)
+				go client.runPairing()
+			}
 		}
 	}
 }
