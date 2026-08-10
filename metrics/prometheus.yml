@@ -16,7 +16,7 @@ scrape_configs:
     scrape_interval: 5s # High frequency for proxy metrics
     metrics_path: /metrics
     static_configs:
-      - targets: ['app:8080']
+      - targets: ['backend:8080'] # docker-compose service name
     metric_relabel_configs:
       - source_labels: [__name__]
         regex: 'go_.*'

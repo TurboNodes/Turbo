@@ -1,46 +1,6 @@
 groups:
   - name: proxy_alerts
     rules:
-      # High error rate alert
-      - alert: ProxyHighErrorRate
-        expr: (rate(proxy_errors_total[5m]) / rate(proxy_requests_total[5m])) > 0.1
-        for: 2m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High error rate detected"
-          description: "Proxy error rate is {{ $value | humanizePercentage }} for protocol {{ $labels.protocol }}"
-
-      # High response time alert
-      - alert: ProxyHighResponseTime{
-        expr: histogram_quantile(0.95, rate(proxy_response_time_seconds_bucket[5m])) > 2
-        for: 3m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High response time detected"
-          description: "95th percentile response time is {{ $value }}s for {{ $labels.protocol }}"
-
-      # Low client count (might indicate issues)
-      - alert: ProxyLowClientCount
-        expr: sum(proxy_active_clients_total) < 1
-        for: 5m
-        labels:
-          severity: info
-        annotations:
-          summary: "Low client count"
-          description: "Only {{ $value }} active clients connected"
-
-      # High bandwidth usage
-      - alert: ProxyHighBandwidth
-        expr: rate(proxy_bytes_transferred_total[1m]) > 100000000 # 100MB/s
-        for: 2m
-        labels:
-          severity: warning
-        annotations:
-          summary: "High bandwidth usage"
-          description: "Bandwidth usage is {{ $value | humanize }}B/s"
-
       # Server down
       - alert: ProxyServerDown
         expr: up{job="proxy-server"} == 0
@@ -51,7 +11,132 @@ groups:
           summary: "Proxy server is down"
           description: "Proxy server has been down for more than 1 minute"
 
-      # Redis connectivity issues
+      # No nodes at all. Every healthy client is added to the global pool
+      # (proxy/balancer.go updatePools), so country="global" is the total node
+      # count -- sum() over the gauge would double-count each node once for the
+      # global pool and once for its own country.
+      - alert: ProxyNoNodes
+        expr: proxy_active_nodes_total{country="global"} < 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No healthy proxy nodes"
+          description: "The {{ $labels.protocol }} routing table holds {{ $value }} healthy nodes; every request is failing"
+
+      # publishPoolGauges only runs when a client registers, changes health, or
+      # disconnects -- never on a timer. A server that has never seen a node
+      # therefore exports no series at all, which the rule above cannot catch.
+      - alert: ProxyNodeGaugeAbsent
+        expr: absent(proxy_active_nodes_total{country="global"})
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No node has ever registered"
+          description: "proxy_active_nodes_total has not been exported for 10m; no QUIC node has registered since startup"
+
+      # A country pool that has emptied. Country targeting fails strictly -- there
+      # is no fallback to the global pool -- so losing the last node in a country
+      # breaks every request that asks for it while the global count stays healthy.
+      # The gauge is Reset() on each rebuild, so a country that loses its last node
+      # disappears rather than reporting 0; max_over_time recovers the history and
+      # `unless` subtracts the countries that are still serving.
+      - alert: ProxyCountryPoolEmpty
+        expr: |
+          max_over_time(proxy_active_nodes_total{country!="global"}[1h]) > 0
+            unless
+          proxy_active_nodes_total{country!="global"} > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Country pool {{ $labels.country }} has no nodes"
+          description: "{{ $labels.country }} served traffic within the last hour but has no healthy nodes now; requests targeting it fail outright rather than falling back to the global pool"
+
+      # End-to-end time to first response byte. Aggregating the buckets by
+      # (protocol, country, le) is required: without it the quantile is computed
+      # per scrape target rather than across the fleet. The rate guard keeps thin
+      # low-traffic countries from alerting on a single slow request.
+      - alert: ProxyHighResponseTime
+        expr: |
+          histogram_quantile(0.95,
+            sum by (protocol, country, le) (rate(proxy_response_time_seconds_bucket[5m]))
+          ) > 2
+            and
+          sum by (protocol, country) (rate(proxy_response_time_seconds_count[5m])) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High response time detected"
+          description: "95th percentile response time is {{ $value }}s for {{ $labels.protocol }} in {{ $labels.country }}"
+
+      # Per-stage rules. proxy_phase_duration_seconds splits a request into
+      # handshake -> node_select -> client_payload -> connect_ack, which is what
+      # makes a single slow stage attributable instead of showing up as a vague
+      # end-to-end regression. No rule on client_payload: it measures how long the
+      # user took to send their first bytes, so it is client-controlled by design.
+
+      # node_select is an in-memory binary search over the routing table and
+      # normally lands in the microsecond buckets. A p95 in the tens of
+      # milliseconds means lock contention or a rebuild storm, not a slow network.
+      - alert: ProxySlowNodeSelect
+        expr: |
+          histogram_quantile(0.95,
+            sum by (protocol, le) (rate(proxy_phase_duration_seconds_bucket{phase="node_select"}[5m]))
+          ) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node selection is slow"
+          description: "node_select p95 is {{ $value }}s for {{ $labels.protocol }} (normally microseconds); suspect routing-table lock contention"
+
+      # handshake covers the protocol handshake and the credential check, so this
+      # tracks the auth backend rather than the proxy path itself.
+      - alert: ProxySlowHandshake
+        expr: |
+          histogram_quantile(0.95,
+            sum by (protocol, le) (rate(proxy_phase_duration_seconds_bucket{phase="handshake"}[5m]))
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Handshake is slow"
+          description: "handshake p95 is {{ $value }}s for {{ $labels.protocol }}; suspect the credential lookup"
+
+      # connect_ack covers dispatching connect to the node and waiting for its
+      # verdict, including retries against other nodes. This is the network-bound
+      # stage and usually the one behind an end-to-end regression.
+      - alert: ProxySlowConnectAck
+        expr: |
+          histogram_quantile(0.95,
+            sum by (protocol, le) (rate(proxy_phase_duration_seconds_bucket{phase="connect_ack"}[5m]))
+          ) > 1.5
+            and
+          sum by (protocol) (rate(proxy_phase_duration_seconds_count{phase="connect_ack"}[5m])) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node connect acknowledgement is slow"
+          description: "connect_ack p95 is {{ $value }}s for {{ $labels.protocol }}; nodes are slow to accept connections or retries are piling up"
+
+      # High bandwidth usage. Summed by direction so the threshold applies to the
+      # aggregate rather than to each protocol/country series individually.
+      - alert: ProxyHighBandwidth
+        expr: sum by (direction) (rate(proxy_bytes_transferred_total[1m])) > 100000000 # 100MB/s
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High bandwidth usage"
+          description: "{{ $labels.direction }} bandwidth is {{ $value | humanize }}B/s"
+
+      # Redis connectivity issues. redis_connected_clients comes from the
+      # redis-exporter job, not from the proxy.
       - alert: RedisConnectionIssues
         expr: redis_connected_clients < 1
         for: 2m
@@ -60,3 +145,9 @@ groups:
         annotations:
           summary: "Redis connectivity issues"
           description: "Redis has {{ $value }} connected clients"
+
+      # NOTE: there is no error-rate alert because the proxy exports no error or
+      # request counter. The previous ProxyHighErrorRate rule referenced
+      # proxy_errors_total and proxy_requests_total, neither of which exists in
+      # data/prometheus.go; it evaluated to nothing and could never fire. Restore
+      # it once a counter with a failure-reason label is added.
