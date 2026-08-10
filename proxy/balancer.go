@@ -3,70 +3,70 @@ package proxy
 import (
 	"log"
 	"math/rand"
+	data2 "server/data"
 	"sort"
 	"sync"
+	"sync/atomic"
 )
 
-var (
-	// Lock-free reads with sync.Map
-	countryClients sync.Map // 2-digit country code -> *CountryPool
-	globalClients  sync.Map // "global" -> *CountryPool
+// globalPoolKey is the routing key used when a request has no country
+// preference, and the country stored for nodes whose location is unknown.
+const globalPoolKey = "global"
 
-	updateMutex sync.RWMutex
+// routingTable is an immutable snapshot of the client pools. Readers grab it
+// with a single atomic load and then only touch read-only data, so a lookup
+// never takes a lock and never contends with a rebuild.
+type routingTable struct {
+	global    *CountryPool
+	countries map[string]*CountryPool // ISO-3166-1 alpha-2 -> pool
+}
+
+var (
+	// pools holds the current *routingTable.
+	pools atomic.Pointer[routingTable]
+
+	// rebuildMutex serialises rebuilds so a slow one cannot publish a table
+	// that is already out of date by the time it stores.
+	rebuildMutex sync.Mutex
 )
 
 type CountryPool struct {
 	clients           []*QuicClient
 	cumulativeWeights []float64 // Pre-computed for O(log n) selection
 	totalWeight       float64
-	lastUpdated       int64
 }
 
 func FindClient() *QuicClient {
-	if client := FindClientByCountry("global"); client != nil {
-		return client
-	} else {
-		// Logs pool sizes for debugging
-		globalPoolSize := 0
-		if pool, ok := globalClients.Load("global"); ok {
-			globalPool := pool.(*CountryPool)
-			globalPoolSize = len(globalPool.clients)
-		}
-
-		countryPoolSize := 0
-		countryClients.Range(func(key, value any) bool {
-			pool := value.(*CountryPool)
-			countryPoolSize += len(pool.clients)
-			return true
-		})
-
-		log.Printf("DEBUG: No healthy clients found. Global pool size: %d, Country pool size: %d", globalPoolSize, countryPoolSize)
-		return nil
-	}
+	return FindClientByCountry(globalPoolKey)
 }
 
+// FindClientByCountry picks a weighted-random healthy client located in
+// countryCode, or nil when that country has none. Passing globalPoolKey (or an
+// empty string) selects from every client regardless of location.
 func FindClientByCountry(countryCode string) *QuicClient {
-	var pool interface{}
-	var ok bool
-
-	if countryCode == "global" {
-		pool, ok = globalClients.Load(countryCode)
-	} else {
-		pool, ok = countryClients.Load(countryCode)
+	table := pools.Load()
+	if table == nil {
+		log.Print("DEBUG: No healthy clients found. Routing table is empty")
+		return nil
 	}
 
-	if ok {
-		countryPool := pool.(*CountryPool)
-		if client := selectFromPool(countryPool); client != nil {
-			return client
-		}
+	pool := table.global
+	if countryCode != globalPoolKey && countryCode != "" {
+		// Reading an immutable map needs no synchronisation.
+		pool = table.countries[countryCode]
 	}
 
+	if client := selectFromPool(pool); client != nil {
+		return client
+	}
+
+	log.Printf("DEBUG: No healthy clients found for %q. Global pool size: %d, countries tracked: %d",
+		countryCode, len(table.global.clients), len(table.countries))
 	return nil
 }
 
 func selectFromPool(pool *CountryPool) *QuicClient {
-	if pool.totalWeight == 0 || len(pool.clients) == 0 {
+	if pool == nil || pool.totalWeight == 0 || len(pool.clients) == 0 {
 		return nil
 	}
 
@@ -92,56 +92,65 @@ func (c *QuicClient) isHealthy() bool {
 	return c != nil && c.conn != nil
 }
 
+// add appends client to the pool, extending the cumulative weight index that
+// selectFromPool binary-searches.
+func (p *CountryPool) add(client *QuicClient, weight float64) {
+	p.totalWeight += weight
+	p.clients = append(p.clients, client)
+	p.cumulativeWeights = append(p.cumulativeWeights, p.totalWeight)
+}
+
+// updatePools rebuilds the routing table from the live client set and swaps it
+// in wholesale, so a country that lost its last node disappears instead of
+// lingering with dead entries.
 func updatePools() {
-	updateMutex.Lock()
-	defer updateMutex.Unlock()
+	rebuildMutex.Lock()
+	defer rebuildMutex.Unlock()
 
-	var globalPool CountryPool
+	QuicMutex.RLock()
+	healthy := make([]*QuicClient, 0, len(QuicClients))
 	for _, client := range QuicClients {
 		if client.isHealthy() {
-			weight := client.Metrics.Score
-			if weight < 1 {
-				weight = 1
-			}
-			globalPool.clients = append(globalPool.clients, client)
-			if len(globalPool.cumulativeWeights) == 0 {
-				globalPool.cumulativeWeights = append(globalPool.cumulativeWeights, weight)
-			} else {
-				cumWeight := globalPool.cumulativeWeights[len(globalPool.cumulativeWeights)-1]
-				globalPool.cumulativeWeights = append(globalPool.cumulativeWeights, cumWeight+weight)
-			}
-			globalPool.totalWeight += weight
+			healthy = append(healthy, client)
 		}
 	}
-	globalClients.Store("global", &globalPool)
+	QuicMutex.RUnlock()
 
-	countryMap := make(map[string]*CountryPool)
-	for _, client := range QuicClients {
-		if client.isHealthy() {
-			country := client.Stats.CountryCode
-			if country == "global" {
-				continue
-			}
-
-			if _, exists := countryMap[country]; !exists {
-				countryMap[country] = &CountryPool{}
-			}
-			pool := countryMap[country]
-			weight := client.Metrics.Score
-			if weight < 1 {
-				weight = 1
-			}
-			pool.clients = append(pool.clients, client)
-			if len(pool.cumulativeWeights) == 0 {
-				pool.cumulativeWeights = append(pool.cumulativeWeights, weight)
-			} else {
-				cumWeight := pool.cumulativeWeights[len(pool.cumulativeWeights)-1]
-				pool.cumulativeWeights = append(pool.cumulativeWeights, cumWeight+weight)
-			}
-			pool.totalWeight += weight
-		}
+	table := &routingTable{
+		global:    &CountryPool{},
+		countries: make(map[string]*CountryPool),
 	}
-	for country, pool := range countryMap {
-		countryClients.Store(country, pool)
+
+	for _, client := range healthy {
+		weight := client.Metrics.Score
+		if weight < 1 {
+			weight = 1
+		}
+
+		table.global.add(client, weight)
+
+		country := client.Stats.CountryCode
+		if country == globalPoolKey || country == "" {
+			continue
+		}
+		pool, ok := table.countries[country]
+		if !ok {
+			pool = &CountryPool{}
+			table.countries[country] = pool
+		}
+		pool.add(client, weight)
+	}
+
+	pools.Store(table)
+	publishPoolGauges(table)
+}
+
+// publishPoolGauges mirrors the new table into Prometheus. Reset first so a
+// country that lost its last node stops reporting a stale count.
+func publishPoolGauges(table *routingTable) {
+	data2.ResetActiveNodes()
+	data2.SetActiveNodes("quic", globalPoolKey, len(table.global.clients))
+	for country, pool := range table.countries {
+		data2.SetActiveNodes("quic", country, len(pool.clients))
 	}
 }
