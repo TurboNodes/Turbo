@@ -8,7 +8,7 @@ What to run a node? Go to [our website](https://turbo-node.vercel.app) or [Turbo
 ## Features
 
 1. [x] Self-sourced IPs and node connection quality analysis for highest success rate
-2. [x] All the standart proxy features:
+2. [x] All the standard proxy features: city-level targeting, HTTP(S)/SOCKS5, rotating/sticky sessions, etc.
 3. [x] Redis Auth & PUB/SUB (Credits, Stream for abnormal traffic detection model)
 4. [ ] Skip-hop option (requires port forwarding and SDK use): dynamically connect to the end nodes for extremely low latency and TTFB (up to <20ms)
 
@@ -111,12 +111,9 @@ sequenceDiagram
 Networks of this type always raise security and ethical concerns.
 Most providers (including major actors such as  Bright Data, Oxylabs, ...) spy the content of your communication with the website, and can even inject malicious content into the traffic.
 
-**We are the only providers that systematically block any pure HTTP request and strictly enforce user-terminated TLS encryption**
+**We are the only provider that systematically block any pure HTTP request and strictly enforce user-terminated TLS encryption.** This zero-trust policy ensures that client nodes cryptographically cannot decrypt the packets' payload.
 
-That way, only the proxy user and the target website can decrypt the traffic.
-Our aforementioned zero-trust policy ensures that client nodes cryptographically cannot see the packets' payload.
-
-This architecture mitigates MITM threats and reliably certifies that the data returned to the proxy user is the data sent by the target website.
+our aforementioned architecture mitigates MITM threats and reliably certifies that the data returned to the proxy user is the data sent by the target website.
 
 ## Network Access
 
